@@ -1,327 +1,512 @@
 """
 ConfiGodZilla Subscription Tool
---------------------------------
-Fetches configs from a V2Ray/Xray-style subscription URL, renames every
-config's title (remark) to a custom name chosen by the user + a sequence
-number, re-encodes everything as a standard base64 subscription, uploads
-it to paste.rs, and copies the resulting subscription link to the
-clipboard.
-
-Requirements:
-    pip install requests
-
-Note: tkinter normally ships with Python. On Linux, if missing:
-    sudo apt install python3-tk
 """
 
-import tkinter as tk
-from tkinter import ttk, messagebox
+import customtkinter as ctk
+from tkinter import messagebox, filedialog
 import requests
 import base64
 import json
 import threading
-import itertools
 import urllib.parse
+import os
+import pyperclip
 
-
-# Public API of paste.rs, created by Sergio Benitez — https://github.com/SergioBenitez/rktpb
 PASTE_URL = "https://paste.rs/"
-LINK_VALIDITY_NOTE = "valid ~30 days (paste.rs default retention)"
+LINK_VALIDITY_NOTE = "valid ~30 days"
 
-# Schemes whose display title lives in the URI fragment, after "#"
 FRAGMENT_BASED_SCHEMES = (
     "vless://", "trojan://", "ss://", "hysteria2://", "hy2://", "tuic://"
 )
 
-
-# ------------------ Config Renaming ------------------
-
-def rename_config(config: str, base_name: str, index: int) -> str:
-    """Sets the display title (remark) of a single config line to
-    '<base_name>-<index>', so configs stay easy to tell apart in a
-    client app, while every other field (server, port, credentials,
-    etc.) stays untouched."""
-    new_title = f"{base_name}-{index}"
-
+# ─────────────────── Renaming logic ─────────────────────────────────────
+def rename_config(config: str, base_name: str, index: int,
+                  replace_keyword: str = "", replace_with: str = "") -> str:
     if config.startswith("vmess://"):
         try:
             payload = config[len("vmess://"):]
             padded = payload + "=" * (-len(payload) % 4)
             data = json.loads(base64.b64decode(padded).decode("utf-8"))
-            data["ps"] = new_title
+            current_ps = data.get("ps", "")
+            if replace_keyword:
+                if replace_keyword in current_ps:
+                    data["ps"] = current_ps.replace(replace_keyword, replace_with)
+            else:
+                data["ps"] = f"{base_name}-{index}"
             new_payload = base64.b64encode(
                 json.dumps(data, ensure_ascii=False).encode("utf-8")
             ).decode("utf-8")
             return "vmess://" + new_payload
         except Exception:
-            return config  # malformed/unsupported vmess payload: leave untouched
+            return config
 
     if config.startswith(FRAGMENT_BASED_SCHEMES):
         base = config.split("#", 1)[0]
-        return f"{base}#{urllib.parse.quote(new_title)}"
+        try:
+            current_remark = urllib.parse.unquote(config.split("#", 1)[1])
+        except IndexError:
+            current_remark = ""
+        if replace_keyword:
+            if replace_keyword in current_remark:
+                new_remark = current_remark.replace(replace_keyword, replace_with)
+            else:
+                new_remark = current_remark
+        else:
+            new_remark = f"{base_name}-{index}"
+        return f"{base}#{urllib.parse.quote(new_remark)}"
 
-    return config  # unrecognized scheme: keep as-is rather than risk breaking it
+    return config
 
+# ─────────────────── Decoding ──────────────────────────────────────────
+def decode_subscription(raw: str) -> list[str]:
+    content = raw.strip()
+    try:
+        decoded = base64.b64decode(content + "=" * (-len(content) % 4)).decode("utf-8")
+        if any(p in decoded for p in ("vless://", "vmess://", "trojan://",
+                                       "ss://", "hysteria", "tuic://")):
+            content = decoded
+    except Exception:
+        pass
+    return [line.strip() for line in content.splitlines() if line.strip()]
 
-# ------------------ Logic ------------------
+# ─────────────────── paste.rs upload ───────────────────────────────────
+def upload_to_pastebin(text: str):
+    resp = requests.post(PASTE_URL, data=text.encode("utf-8"), timeout=15)
+    resp.raise_for_status()
+    return resp.text.strip(), resp.status_code == 206
 
-def process_subscription_thread():
-    url = url_entry.get().strip()
-    base_name = name_entry.get().strip()
+# ─────────────────── Background processing ─────────────────────────────
+def process_thread(root, widgets):
+    url_or_configs = widgets["input_text"].get("1.0", "end-1c").strip()
+    base_name      = widgets["name_entry"].get().strip() if not widgets["replace_var"].get() else ""
+    do_replace     = widgets["replace_var"].get()
+    kw_find        = widgets["kw_find_entry"].get().strip()
+    kw_replace     = widgets["kw_replace_entry"].get().strip()
+    output_mode    = widgets["output_var"].get()
 
-    if not url:
-        messagebox.showerror("Error", "Please enter a subscription URL")
+    if not url_or_configs:
+        messagebox.showerror("Error", "Please enter a subscription URL or paste config lines.")
+        return
+    if not do_replace and not base_name:
+        messagebox.showerror("Error", "Please enter a custom config name.")
+        return
+    if do_replace and not kw_find:
+        messagebox.showerror("Error", "Please enter the keyword to find for replacement.")
         return
 
-    if not base_name:
-        messagebox.showerror("Error", "Please enter a custom config name")
-        return
+    def set_status(text, color="#b8860b"):
+        widgets["status_label"].configure(text=text, text_color=color)
+        root.update_idletasks()
+
+    # Show progress bar
+    root.after(0, lambda: widgets["progress"].grid())
 
     try:
-        set_status("Connecting...", "#f1c40f")
-        progress.start(10)
-        start_spinner()
+        set_status("Parsing input…")
+        widgets["progress"].start()
 
-        response = requests.get(url, timeout=15)
-        response.raise_for_status()
-        content = response.text.strip()
+        if url_or_configs.startswith(("http://", "https://")):
+            set_status("Fetching subscription…")
+            resp = requests.get(url_or_configs, timeout=15)
+            resp.raise_for_status()
+            raw = resp.text.strip()
+        else:
+            raw = url_or_configs
 
-        set_status("Decoding content...", "#f1c40f")
+        configs = decode_subscription(raw)
+        if not configs:
+            set_status("No configs found.", "#b8860b")
+            return
 
+        set_status(f"Renaming {len(configs)} configs…")
+
+        renamed = []
+        for i, cfg in enumerate(configs, 1):
+            renamed.append(
+                rename_config(
+                    cfg,
+                    base_name if not do_replace else "",
+                    i,
+                    replace_keyword=kw_find if do_replace else "",
+                    replace_with=kw_replace if do_replace else "",
+                )
+            )
+
+        if output_mode == "subscription":
+            set_status("Uploading to paste.rs…")
+            joined = "\n".join(renamed)
+            encoded = base64.b64encode(joined.encode("utf-8")).decode("utf-8")
+            link, truncated = upload_to_pastebin(encoded)
+
+            widgets["output_var_display"].set(link)
+            pyperclip.copy(link)
+
+            if truncated:
+                set_status(
+                    f"⚠️ {len(renamed)} configs (link truncated)",
+                    "#b8860b"
+                )
+            else:
+                set_status(
+                    f"✅ {len(renamed)} configs renamed — link copied ({LINK_VALIDITY_NOTE})",
+                    "#2e8b57"
+                )
+        else:
+            txt_content = "\n".join(renamed)
+            save_path = filedialog.asksaveasfilename(
+                defaultextension=".txt",
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+                title="Save renamed configs",
+                initialfile=f"{base_name or 'configs'}_configs.txt",
+            )
+            if save_path:
+                with open(save_path, "w", encoding="utf-8") as f:
+                    f.write(txt_content)
+                pyperclip.copy(txt_content)
+                widgets["output_var_display"].set(save_path)
+                set_status(
+                    f"✅ {len(renamed)} configs saved & copied",
+                    "#2e8b57"
+                )
+            else:
+                pyperclip.copy(txt_content)
+                widgets["output_var_display"].set("(not saved — content copied)")
+                set_status(
+                    f"✅ {len(renamed)} configs copied to clipboard",
+                    "#2e8b57"
+                )
+    except Exception as e:
+        set_status("Operation failed ❌", "#b8860b")
+        messagebox.showerror("Error", str(e))
+    finally:
+        widgets["progress"].stop()
+        # Hide progress bar when done
+        root.after(0, lambda: widgets["progress"].grid_remove())
+
+# ─────────────────── UI Builder (White + Dark Gold) ────────────────────
+def build_ui():
+    ctk.set_appearance_mode("light")
+    ctk.set_default_color_theme("blue")  # پایه، رنگ‌ها دستی بازنویسی می‌شوند
+
+    # رنگ‌های سفارشی: سفید و طلایی تیره
+    GOLD = "#b8860b"
+    GOLD_HOVER = "#daa520"
+    BG_WHITE = "#ffffff"
+    BG_CARD = "#f8f8f8"
+    TEXT_BLACK = "#000000"
+    TEXT_GRAY = "#555555"
+
+    root = ctk.CTk()
+    root.title("ConfiGodZilla Subscription Tool")
+    root.geometry("600x680")
+    root.minsize(500, 620)
+
+    # آیکون اختصاصی
+    icon_path = os.path.join(os.path.dirname(__file__), "myico.ico")
+    if os.path.exists(icon_path):
         try:
-            decoded = base64.b64decode(content).decode("utf-8")
-            if "vless://" in decoded or "vmess://" in decoded or "trojan://" in decoded:
-                content = decoded
+            root.iconbitmap(icon_path)
         except Exception:
             pass
 
-        configs = [c for c in content.splitlines() if c.strip()]
+    # پیکربندی grid
+    root.grid_columnconfigure(0, weight=1)
+    root.grid_rowconfigure(0, weight=0)   # header
+    root.grid_rowconfigure(1, weight=0)   # help (hidden)
+    root.grid_rowconfigure(2, weight=1)   # input
+    root.grid_rowconfigure(3, weight=0)   # naming
+    root.grid_rowconfigure(4, weight=0)   # output format
+    root.grid_rowconfigure(5, weight=0)   # progress (hidden)
+    root.grid_rowconfigure(6, weight=0)   # process button
+    root.grid_rowconfigure(7, weight=0)   # result
+    root.grid_rowconfigure(8, weight=0)   # status
+    root.grid_rowconfigure(9, weight=0)   # footer
 
-        if not configs:
-            set_status("No configs found", "#e67e22")
-            stop_spinner()
-            progress.stop()
-            return
+    widgets = {}
 
-        set_status("Renaming configs...", "#f1c40f")
+    # ── هدر + دکمه راهنما ──────────────────────────────────────────────
+    header_frame = ctk.CTkFrame(root, fg_color="transparent")
+    header_frame.grid(row=0, column=0, padx=10, pady=(10, 2), sticky="ew")
+    header_frame.grid_columnconfigure(0, weight=1)
 
-        renamed_configs = [
-            rename_config(c, base_name, i + 1) for i, c in enumerate(configs)
-        ]
+    ctk.CTkLabel(
+        header_frame, text="🪐 ConfiGodZilla Subscription Tool",
+        font=ctk.CTkFont(size=18, weight="bold"),    # درشت‌تر
+        text_color=TEXT_BLACK
+    ).grid(row=0, column=0, sticky="w", padx=(0, 10))
 
-        set_status("Building subscription link...", "#f1c40f")
-
-        # The full renamed config list must be base64-encoded as one
-        # block, exactly like a standard subscription payload.
-        joined = "\n".join(renamed_configs)
-        encoded = base64.b64encode(joined.encode("utf-8")).decode("utf-8")
-
-        sub_link, truncated = upload_to_pastebin(encoded)
-
-        link_var.set(sub_link)
-        copy_to_clipboard(sub_link)
-
-        if truncated:
-            set_status(
-                f"⚠️ {len(renamed_configs)} configs (link truncated: too large)",
-                "#e67e22",
-            )
+    help_visible = False
+    def toggle_help():
+        nonlocal help_visible
+        help_visible = not help_visible
+        if help_visible:
+            help_frame.grid(row=1, column=0, padx=10, pady=(0, 6), sticky="ew")
+            help_btn.configure(text="✖")
         else:
-            set_status(
-                f"✅ {len(renamed_configs)} configs renamed - link copied ({LINK_VALIDITY_NOTE})",
-                "#2ecc71",
-            )
+            help_frame.grid_forget()
+            help_btn.configure(text="?")
 
-    except Exception as e:
-        set_status("Operation failed ❌", "#e74c3c")
-        messagebox.showerror("Error", str(e))
+    help_btn = ctk.CTkButton(
+        header_frame, text="?", command=toggle_help,
+        width=30, height=30, corner_radius=6,
+        font=ctk.CTkFont(size=14, weight="bold"),
+        fg_color=GOLD, hover_color=GOLD_HOVER, text_color="white"
+    )
+    help_btn.grid(row=0, column=1, sticky="e")
 
-    finally:
-        stop_spinner()
-        progress.stop()
+    # ── فریم راهنما (پنهان) ────────────────────────────────────────────
+    help_frame = ctk.CTkFrame(root, corner_radius=8, fg_color=BG_CARD)
+    help_frame.grid_columnconfigure(0, weight=1)
 
+    help_text = (
+        "📘 ConfiGodZilla Help\n\n"
+        "1. Input: Paste a subscription URL (https://…) or raw config lines "
+        "(vmess, vless, trojan, ss, ...). The tool auto-detects the format.\n\n"
+        "2. Custom Name: Choose a base name; configs will be renamed to 'Name-1', 'Name-2', ...\n\n"
+        "3. Keyword Replacement: Enable to replace a specific word inside existing remarks "
+        "without numbering. The custom name field disappears, and you only specify the keyword "
+        "to find and its replacement.\n\n"
+        "4. Output:\n"
+        "   - Subscription Link: Configs are base64-encoded and uploaded to paste.rs. "
+        "The generated link is copied to clipboard (valid ~30 days).\n"
+        "   - TXT File: Configs are saved to a local .txt file and also copied to clipboard.\n\n"
+        "Note: paste.rs links remain active for approximately 30 days."
+    )
+    help_box = ctk.CTkTextbox(
+        help_frame, corner_radius=6, font=ctk.CTkFont(size=12),   # درشت‌تر
+        wrap="word", height=160,
+        fg_color=BG_WHITE, text_color=TEXT_BLACK,
+        border_color=GOLD, border_width=1
+    )
+    help_box.insert("0.0", help_text)
+    help_box.configure(state="disabled")
+    help_box.grid(row=0, column=0, padx=8, pady=(8, 8), sticky="nsew")
 
-def upload_to_pastebin(text: str):
-    """Uploads text to paste.rs and returns (link, was_truncated)."""
-    response = requests.post(PASTE_URL, data=text.encode("utf-8"), timeout=15)
-    response.raise_for_status()
-    link = response.text.strip()
-    truncated = response.status_code == 206  # paste exceeded server size limit
-    return link, truncated
+    # ── بخش ورودی ──────────────────────────────────────────────────────
+    input_frame = ctk.CTkFrame(root, corner_radius=8, fg_color=BG_CARD)
+    input_frame.grid(row=2, column=0, padx=10, pady=(0, 6), sticky="nsew")
+    input_frame.grid_columnconfigure(0, weight=1)
+    input_frame.grid_rowconfigure(2, weight=1)
 
+    ctk.CTkLabel(
+        input_frame, text="① Input – Subscription URL or Configs",
+        font=ctk.CTkFont(weight="bold", size=13),   # درشت‌تر
+        text_color=TEXT_BLACK
+    ).grid(row=0, column=0, padx=8, pady=(8, 2), sticky="w")
 
-def copy_to_clipboard(text: str):
-    root.clipboard_clear()
-    root.clipboard_append(text)
-    root.update()
+    ctk.CTkLabel(
+        input_frame,
+        text="Paste a URL or raw config lines (auto-detect)",
+        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        text_color=TEXT_GRAY
+    ).grid(row=1, column=0, padx=8, pady=(0, 4), sticky="w")
 
+    input_text = ctk.CTkTextbox(
+        input_frame, corner_radius=6, font=ctk.CTkFont(size=12), wrap="none",  # درشت‌تر
+        fg_color=BG_WHITE, text_color=TEXT_BLACK,
+        border_color=GOLD, border_width=1
+    )
+    input_text.grid(row=2, column=0, padx=8, pady=(0, 8), sticky="nsew")
+    input_text.configure(height=80)
+    widgets["input_text"] = input_text
 
-def copy_link_again():
-    link = link_var.get()
-    if link:
-        copy_to_clipboard(link)
-        set_status("📋 Link copied again", "#2ecc71")
+    # ── بخش نام‌گذاری و جایگزینی ──────────────────────────────────────
+    name_frame = ctk.CTkFrame(root, corner_radius=8, fg_color=BG_CARD)
+    name_frame.grid(row=3, column=0, padx=10, pady=(0, 6), sticky="ew")
 
+    ctk.CTkLabel(
+        name_frame, text="② Config Naming",
+        font=ctk.CTkFont(weight="bold", size=13),   # درشت‌تر
+        text_color=TEXT_BLACK
+    ).pack(anchor="w", padx=8, pady=(8, 2))
 
-def process_subscription():
-    threading.Thread(target=process_subscription_thread, daemon=True).start()
+    # کانتینر نام کاستوم (وقتی جایگزینی غیرفعال است)
+    custom_name_frame = ctk.CTkFrame(name_frame, fg_color="transparent")
+    widgets["custom_name_frame"] = custom_name_frame
 
+    ctk.CTkLabel(
+        custom_name_frame, text="Custom Name (e.g. MyServer)",
+        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        text_color=TEXT_GRAY
+    ).pack(anchor="w", padx=0, pady=(0, 2))
 
-# ------------------ Spinner ------------------
+    name_entry = ctk.CTkEntry(
+        custom_name_frame, placeholder_text="MyServer",
+        font=ctk.CTkFont(size=12), height=32,       # کمی بلندتر
+        fg_color=BG_WHITE, text_color=TEXT_BLACK,
+        border_color=GOLD
+    )
+    name_entry.pack(fill="x", padx=0, pady=(0, 4))
+    widgets["name_entry"] = name_entry
 
-spinner_cycle = itertools.cycle(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-spinner_running = False
+    # چک‌باکس جایگزینی
+    replace_var = ctk.BooleanVar(value=False)
+    widgets["replace_var"] = replace_var
 
+    replace_check = ctk.CTkCheckBox(
+        name_frame,
+        text="Enable Keyword Replacement (no numbering)",
+        variable=replace_var,
+        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        fg_color=GOLD, hover_color=GOLD_HOVER,
+        text_color=TEXT_BLACK
+    )
+    replace_check.pack(anchor="w", padx=8, pady=(4, 2))
 
-def animate_spinner():
-    if spinner_running:
-        spinner_label.config(text=next(spinner_cycle))
-        root.after(100, animate_spinner)
+    # فیلدهای جایگزینی (پنهان)
+    kw_frame = ctk.CTkFrame(name_frame, fg_color="transparent")
+    widgets["kw_frame"] = kw_frame
 
+    ctk.CTkLabel(
+        kw_frame, text="Find keyword in current remark:",
+        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        text_color=TEXT_GRAY
+    ).pack(anchor="w", pady=(2, 2))
 
-def start_spinner():
-    global spinner_running
-    spinner_running = True
-    animate_spinner()
+    kw_find_entry = ctk.CTkEntry(
+        kw_frame, placeholder_text="Keyword to find",
+        font=ctk.CTkFont(size=12), height=30,
+        fg_color=BG_WHITE, text_color=TEXT_BLACK,
+        border_color=GOLD
+    )
+    kw_find_entry.pack(fill="x", pady=(0, 2))
+    widgets["kw_find_entry"] = kw_find_entry
 
+    ctk.CTkLabel(
+        kw_frame, text="Replace with:",
+        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        text_color=TEXT_GRAY
+    ).pack(anchor="w", pady=(2, 2))
 
-def stop_spinner():
-    global spinner_running
-    spinner_running = False
-    spinner_label.config(text="")
+    kw_replace_entry = ctk.CTkEntry(
+        kw_frame, placeholder_text="New keyword",
+        font=ctk.CTkFont(size=12), height=30,
+        fg_color=BG_WHITE, text_color=TEXT_BLACK,
+        border_color=GOLD
+    )
+    kw_replace_entry.pack(fill="x", pady=(0, 4))
+    widgets["kw_replace_entry"] = kw_replace_entry
 
+    def toggle_replacement(*args):
+        if replace_var.get():
+            custom_name_frame.pack_forget()
+            kw_frame.pack(fill="x", padx=8, pady=(0, 4))
+        else:
+            kw_frame.pack_forget()
+            custom_name_frame.pack(fill="x", padx=8, pady=(0, 4))
 
-# ------------------ UI Helpers ------------------
+    replace_var.trace_add("write", toggle_replacement)
+    toggle_replacement()
 
-def set_status(text, color):
-    status_label.config(text=text, fg=color)
-    root.update_idletasks()
+    # ── فرمت خروجی ────────────────────────────────────────────────────
+    out_frame = ctk.CTkFrame(root, corner_radius=8, fg_color=BG_CARD)
+    out_frame.grid(row=4, column=0, padx=10, pady=(0, 6), sticky="ew")
 
+    ctk.CTkLabel(
+        out_frame, text="③ Output Format",
+        font=ctk.CTkFont(weight="bold", size=13),   # درشت‌تر
+        text_color=TEXT_BLACK
+    ).grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
 
-def create_rounded_button(parent, text, command, width=220):
+    output_var = ctk.StringVar(value="subscription")
+    widgets["output_var"] = output_var
 
-    canvas = tk.Canvas(parent, width=width, height=45,
-                        bg="#121212", highlightthickness=0)
+    radio_frame = ctk.CTkFrame(out_frame, fg_color="transparent")
+    radio_frame.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="ew")
 
-    def draw_button(color):
-        canvas.delete("all")
-        canvas.create_oval(5, 5, 45, 45, fill=color, outline=color)
-        canvas.create_oval(width - 45, 5, width - 5, 45, fill=color, outline=color)
-        canvas.create_rectangle(25, 5, width - 25, 45, fill=color, outline=color)
-        canvas.create_text(width // 2, 23, text=text,
-                            fill="white",
-                            font=("Segoe UI", 11, "bold"))
+    ctk.CTkRadioButton(
+        radio_frame, text="Subscription Link (paste.rs)",
+        variable=output_var, value="subscription",
+        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        fg_color=GOLD, hover_color=GOLD_HOVER,
+        text_color=TEXT_BLACK
+    ).pack(side="left", padx=(0, 20))
 
-    draw_button("#6c5ce7")
+    ctk.CTkRadioButton(
+        radio_frame, text="TXT File",
+        variable=output_var, value="txt",
+        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        fg_color=GOLD, hover_color=GOLD_HOVER,
+        text_color=TEXT_BLACK
+    ).pack(side="left")
 
-    def on_enter(e):
-        draw_button("#5a4bcf")
+    # ── نوار پیشرفت (مخفی در ابتدا) ──────────────────────────────────
+    progress = ctk.CTkProgressBar(
+        root, mode="indeterminate", height=10, corner_radius=4,
+        fg_color="#e0e0e0", progress_color=GOLD
+    )
+    # در grid ردیف 5 قرار می‌گیرد، اما مخفی می‌کنیم
+    progress.grid(row=5, column=0, padx=10, pady=(4, 0), sticky="ew")
+    progress.grid_remove()  # مخفی در حالت اولیه
+    progress.set(0)
+    widgets["progress"] = progress
 
-    def on_leave(e):
-        draw_button("#6c5ce7")
+    def on_process():
+        threading.Thread(target=process_thread, args=(root, widgets), daemon=True).start()
 
-    canvas.bind("<Enter>", on_enter)
-    canvas.bind("<Leave>", on_leave)
-    canvas.bind("<Button-1>", lambda e: command())
+    process_btn = ctk.CTkButton(
+        root, text="⚡ Process Configs", command=on_process,
+        height=34, corner_radius=6, font=ctk.CTkFont(size=13, weight="bold"),
+        fg_color=GOLD, hover_color=GOLD_HOVER, text_color="white"
+    )
+    process_btn.grid(row=6, column=0, padx=10, pady=(8, 4))
 
-    return canvas
+    # ── نتیجه ─────────────────────────────────────────────────────────
+    result_frame = ctk.CTkFrame(root, corner_radius=8, fg_color=BG_CARD)
+    result_frame.grid(row=7, column=0, padx=10, pady=(0, 4), sticky="ew")
 
+    ctk.CTkLabel(
+        result_frame, text="④ Result",
+        font=ctk.CTkFont(weight="bold", size=13),   # درشت‌تر
+        text_color=TEXT_BLACK
+    ).pack(anchor="w", padx=8, pady=(8, 2))
 
-# ------------------ UI ------------------
+    output_var_display = ctk.StringVar()
+    widgets["output_var_display"] = output_var_display
 
-root = tk.Tk()
-root.title("ConfiGodZilla Subscription Tool")
-root.geometry("600x520")
-root.resizable(False, False)
-root.configure(bg="#121212")
+    result_row = ctk.CTkFrame(result_frame, fg_color="transparent")
+    result_row.pack(fill="x", padx=8, pady=(2, 8))
 
-title = tk.Label(root,
-                  text="🪐 ConfiGodZilla Subscription Tool",
-                  bg="#121212",
-                  fg="white",
-                  font=("Segoe UI", 14, "bold"))
-title.pack(pady=(15, 5))
+    link_entry = ctk.CTkEntry(
+        result_row, textvariable=output_var_display,
+        font=ctk.CTkFont(size=12), height=30,       # درشت‌تر
+        state="readonly", corner_radius=4,
+        fg_color=BG_WHITE, text_color=TEXT_BLACK,
+        border_color=GOLD
+    )
+    link_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
-# ---------- Subscription URL ----------
-tk.Label(root, text="Subscription URL", bg="#121212", fg="#aaaaaa",
-          font=("Segoe UI", 9)).pack(pady=(10, 2))
+    def copy_again():
+        val = output_var_display.get()
+        if val:
+            pyperclip.copy(val)
+            widgets["status_label"].configure(text="📋 Copied again", text_color=GOLD)
 
-url_entry = tk.Entry(root,
-                      width=70,
-                      font=("Segoe UI", 11),
-                      bg="#1e1e1e",
-                      fg="white",
-                      insertbackground="white",
-                      relief="flat")
-url_entry.pack(ipady=8)
+    copy_btn = ctk.CTkButton(
+        result_row, text="📋", command=copy_again,
+        width=36, height=28, corner_radius=4, font=ctk.CTkFont(size=12),
+        fg_color=GOLD, hover_color=GOLD_HOVER, text_color="white"
+    )
+    copy_btn.pack(side="right")
 
-# ---------- Custom Config Name ----------
-tk.Label(root, text="Custom Config Name", bg="#121212", fg="#aaaaaa",
-          font=("Segoe UI", 9)).pack(pady=(15, 2))
+    # ── وضعیت ──────────────────────────────────────────────────────────
+    status_label = ctk.CTkLabel(
+        root, text="Status: Idle",
+        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        text_color=TEXT_GRAY
+    )
+    status_label.grid(row=8, column=0, padx=10, pady=(2, 4), sticky="ew")
+    widgets["status_label"] = status_label
 
-name_entry = tk.Entry(root,
-                       width=70,
-                       font=("Segoe UI", 11),
-                       bg="#1e1e1e",
-                       fg="white",
-                       insertbackground="white",
-                       relief="flat")
-name_entry.pack(ipady=8)
+    # ── پانویس ────────────────────────────────────────────────────────
+    ctk.CTkLabel(
+        root,
+        text="Subscription links on paste.rs remain active ~30 days.",
+        font=ctk.CTkFont(size=10),                  # درشت‌تر
+        text_color=TEXT_GRAY
+    ).grid(row=9, column=0, padx=10, pady=(0, 8), sticky="ew")
 
-tk.Label(root,
-          text="Every config will be titled like this: YourName-1, YourName-2, ...",
-          bg="#121212", fg="#666666",
-          font=("Segoe UI", 8)).pack(pady=(4, 0))
+    root.mainloop()
 
-process_btn = create_rounded_button(root,
-                                     "Generate Subscription Link",
-                                     process_subscription,
-                                     width=260)
-process_btn.pack(pady=20)
-
-progress = ttk.Progressbar(root, mode="indeterminate", length=400)
-progress.pack(pady=5)
-
-spinner_label = tk.Label(root,
-                          text="",
-                          bg="#121212",
-                          fg="#6c5ce7",
-                          font=("Segoe UI", 16))
-spinner_label.pack()
-
-# ---------- Output subscription link ----------
-link_frame = tk.Frame(root, bg="#121212")
-link_frame.pack(pady=10, fill="x", padx=30)
-
-link_var = tk.StringVar()
-link_entry = tk.Entry(link_frame,
-                       textvariable=link_var,
-                       font=("Segoe UI", 10),
-                       bg="#1e1e1e",
-                       fg="#6c5ce7",
-                       insertbackground="white",
-                       relief="flat",
-                       state="readonly",
-                       readonlybackground="#1e1e1e")
-link_entry.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 8))
-
-copy_btn = create_rounded_button(link_frame, "📋 Copy", copy_link_again, width=100)
-copy_btn.pack(side="right")
-
-status_label = tk.Label(root,
-                         text="Status: Idle",
-                         bg="#121212",
-                         fg="#aaaaaa",
-                         font=("Segoe UI", 10))
-status_label.pack(pady=10)
-
-info_label = tk.Label(
-    root,
-    text="ℹ️ Links are hosted on paste.rs and remain active for ~30 days by default.",
-    bg="#121212",
-    fg="#555555",
-    font=("Segoe UI", 8),
-)
-info_label.pack(pady=(0, 10))
-
-root.mainloop()
+if __name__ == "__main__":
+    build_ui()
