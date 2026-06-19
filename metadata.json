@@ -1,0 +1,6 @@
+{
+  "name": "ConfiGodZilla",
+  "description": "Premium Gilded Subscription Config Tool to parse, rename, process, and generate subscription lists with paste.rs support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
