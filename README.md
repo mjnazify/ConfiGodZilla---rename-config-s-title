@@ -1,3 +1,10 @@
+## 📺 EDUCATIONAL VIDEO COMING SOON!
+# This project was built under the supervision of Artificial Intelligence, with minimal human involvement.
+
+# Special thanks to aistudio.google.com and everyone else who contributes to making the world a better place. 🌍
+
+
+
 # 🪐 ConfiGodZilla Subscription Tool
 
 A modern, lightweight desktop GUI that takes a V2Ray/Xray‑style subscription (URL or raw configs), renames every config remark exactly the way you want, and gives you back either a fresh subscription link or a local `.txt` file — all with a clean white & gold interface.

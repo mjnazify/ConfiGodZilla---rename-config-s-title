@@ -1,17 +1,33 @@
 """
 ConfiGodZilla Subscription Tool
+A lightweight utility to rename and repack VPN subscription configs.
 """
 
 import customtkinter as ctk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox, filedialog, PhotoImage
 import requests
 import base64
 import json
 import threading
 import urllib.parse
 import os
+import sys
 import pyperclip
 
+# ----------------------------------------------------------------------
+# Path helper for PyInstaller bundled executables
+# ----------------------------------------------------------------------
+def resource_path(relative_path: str) -> str:
+    """Return absolute path to resource, works for dev and for PyInstaller."""
+    try:
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
+
+# ----------------------------------------------------------------------
+# Constants
+# ----------------------------------------------------------------------
 PASTE_URL = "https://paste.rs/"
 LINK_VALIDITY_NOTE = "valid ~30 days"
 
@@ -19,9 +35,16 @@ FRAGMENT_BASED_SCHEMES = (
     "vless://", "trojan://", "ss://", "hysteria2://", "hy2://", "tuic://"
 )
 
-# ─────────────────── Renaming logic ─────────────────────────────────────
+# ----------------------------------------------------------------------
+# Renaming logic
+# ----------------------------------------------------------------------
 def rename_config(config: str, base_name: str, index: int,
                   replace_keyword: str = "", replace_with: str = "") -> str:
+    """
+    Rename a single config line (vmess:// or fragment‑based).
+    If replace_keyword is non‑empty, perform keyword substitution.
+    Otherwise, number with base_name.
+    """
     if config.startswith("vmess://"):
         try:
             payload = config[len("vmess://"):]
@@ -57,8 +80,11 @@ def rename_config(config: str, base_name: str, index: int,
 
     return config
 
-# ─────────────────── Decoding ──────────────────────────────────────────
+# ----------------------------------------------------------------------
+# Decoding subscription content
+# ----------------------------------------------------------------------
 def decode_subscription(raw: str) -> list[str]:
+    """Decode base64 if needed, return list of config lines."""
     content = raw.strip()
     try:
         decoded = base64.b64decode(content + "=" * (-len(content) % 4)).decode("utf-8")
@@ -69,13 +95,18 @@ def decode_subscription(raw: str) -> list[str]:
         pass
     return [line.strip() for line in content.splitlines() if line.strip()]
 
-# ─────────────────── paste.rs upload ───────────────────────────────────
+# ----------------------------------------------------------------------
+# paste.rs upload
+# ----------------------------------------------------------------------
 def upload_to_pastebin(text: str):
+    """Upload text to paste.rs and return (url, truncated_flag)."""
     resp = requests.post(PASTE_URL, data=text.encode("utf-8"), timeout=15)
     resp.raise_for_status()
     return resp.text.strip(), resp.status_code == 206
 
-# ─────────────────── Background processing ─────────────────────────────
+# ----------------------------------------------------------------------
+# Background processing thread
+# ----------------------------------------------------------------------
 def process_thread(root, widgets):
     url_or_configs = widgets["input_text"].get("1.0", "end-1c").strip()
     base_name      = widgets["name_entry"].get().strip() if not widgets["replace_var"].get() else ""
@@ -180,15 +211,15 @@ def process_thread(root, widgets):
         messagebox.showerror("Error", str(e))
     finally:
         widgets["progress"].stop()
-        # Hide progress bar when done
         root.after(0, lambda: widgets["progress"].grid_remove())
 
-# ─────────────────── UI Builder (White + Dark Gold) ────────────────────
+# ----------------------------------------------------------------------
+# UI Builder
+# ----------------------------------------------------------------------
 def build_ui():
     ctk.set_appearance_mode("light")
-    ctk.set_default_color_theme("blue")  # پایه، رنگ‌ها دستی بازنویسی می‌شوند
+    ctk.set_default_color_theme("blue")
 
-    # رنگ‌های سفارشی: سفید و طلایی تیره
     GOLD = "#b8860b"
     GOLD_HOVER = "#daa520"
     BG_WHITE = "#ffffff"
@@ -201,37 +232,52 @@ def build_ui():
     root.geometry("600x680")
     root.minsize(500, 620)
 
-    # آیکون اختصاصی
-    icon_path = os.path.join(os.path.dirname(__file__), "myico.ico")
-    if os.path.exists(icon_path):
-        try:
-            root.iconbitmap(icon_path)
-        except Exception:
-            pass
+    # ------------------------------------------------------------------
+    # Set window icon (works for both dev and bundled executable)
+    # ------------------------------------------------------------------
+    def set_icon():
+        ico_path = resource_path("myico.ico")
 
-    # پیکربندی grid
+        # Windows taskbar / title bar (uses .ico)
+        if os.path.exists(ico_path):
+            try:
+                root.iconbitmap(default=ico_path)
+            except Exception as e:
+                print(f"Warning: iconbitmap failed ({e})")
+
+    # Call once immediately, then schedule delayed calls to ensure
+    # customtkinter doesn't overwrite the icon later.
+    set_icon()
+    root.after(300, set_icon)
+    root.after(800, set_icon)
+
+    # ------------------------------------------------------------------
+    # Grid configuration
+    # ------------------------------------------------------------------
     root.grid_columnconfigure(0, weight=1)
-    root.grid_rowconfigure(0, weight=0)   # header
-    root.grid_rowconfigure(1, weight=0)   # help (hidden)
-    root.grid_rowconfigure(2, weight=1)   # input
-    root.grid_rowconfigure(3, weight=0)   # naming
-    root.grid_rowconfigure(4, weight=0)   # output format
-    root.grid_rowconfigure(5, weight=0)   # progress (hidden)
-    root.grid_rowconfigure(6, weight=0)   # process button
-    root.grid_rowconfigure(7, weight=0)   # result
-    root.grid_rowconfigure(8, weight=0)   # status
-    root.grid_rowconfigure(9, weight=0)   # footer
+    root.grid_rowconfigure(0, weight=0)
+    root.grid_rowconfigure(1, weight=0)
+    root.grid_rowconfigure(2, weight=1)
+    root.grid_rowconfigure(3, weight=0)
+    root.grid_rowconfigure(4, weight=0)
+    root.grid_rowconfigure(5, weight=0)
+    root.grid_rowconfigure(6, weight=0)
+    root.grid_rowconfigure(7, weight=0)
+    root.grid_rowconfigure(8, weight=0)
+    root.grid_rowconfigure(9, weight=0)
 
     widgets = {}
 
-    # ── هدر + دکمه راهنما ──────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Header + Help toggle
+    # ------------------------------------------------------------------
     header_frame = ctk.CTkFrame(root, fg_color="transparent")
     header_frame.grid(row=0, column=0, padx=10, pady=(10, 2), sticky="ew")
     header_frame.grid_columnconfigure(0, weight=1)
 
     ctk.CTkLabel(
         header_frame, text="🪐 ConfiGodZilla Subscription Tool",
-        font=ctk.CTkFont(size=18, weight="bold"),    # درشت‌تر
+        font=ctk.CTkFont(size=18, weight="bold"),
         text_color=TEXT_BLACK
     ).grid(row=0, column=0, sticky="w", padx=(0, 10))
 
@@ -254,7 +300,9 @@ def build_ui():
     )
     help_btn.grid(row=0, column=1, sticky="e")
 
-    # ── فریم راهنما (پنهان) ────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Help frame (hidden by default)
+    # ------------------------------------------------------------------
     help_frame = ctk.CTkFrame(root, corner_radius=8, fg_color=BG_CARD)
     help_frame.grid_columnconfigure(0, weight=1)
 
@@ -273,7 +321,7 @@ def build_ui():
         "Note: paste.rs links remain active for approximately 30 days."
     )
     help_box = ctk.CTkTextbox(
-        help_frame, corner_radius=6, font=ctk.CTkFont(size=12),   # درشت‌تر
+        help_frame, corner_radius=6, font=ctk.CTkFont(size=12),
         wrap="word", height=160,
         fg_color=BG_WHITE, text_color=TEXT_BLACK,
         border_color=GOLD, border_width=1
@@ -282,7 +330,9 @@ def build_ui():
     help_box.configure(state="disabled")
     help_box.grid(row=0, column=0, padx=8, pady=(8, 8), sticky="nsew")
 
-    # ── بخش ورودی ──────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Input area
+    # ------------------------------------------------------------------
     input_frame = ctk.CTkFrame(root, corner_radius=8, fg_color=BG_CARD)
     input_frame.grid(row=2, column=0, padx=10, pady=(0, 6), sticky="nsew")
     input_frame.grid_columnconfigure(0, weight=1)
@@ -290,19 +340,19 @@ def build_ui():
 
     ctk.CTkLabel(
         input_frame, text="① Input – Subscription URL or Configs",
-        font=ctk.CTkFont(weight="bold", size=13),   # درشت‌تر
+        font=ctk.CTkFont(weight="bold", size=13),
         text_color=TEXT_BLACK
     ).grid(row=0, column=0, padx=8, pady=(8, 2), sticky="w")
 
     ctk.CTkLabel(
         input_frame,
         text="Paste a URL or raw config lines (auto-detect)",
-        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        font=ctk.CTkFont(size=11),
         text_color=TEXT_GRAY
     ).grid(row=1, column=0, padx=8, pady=(0, 4), sticky="w")
 
     input_text = ctk.CTkTextbox(
-        input_frame, corner_radius=6, font=ctk.CTkFont(size=12), wrap="none",  # درشت‌تر
+        input_frame, corner_radius=6, font=ctk.CTkFont(size=12), wrap="none",
         fg_color=BG_WHITE, text_color=TEXT_BLACK,
         border_color=GOLD, border_width=1
     )
@@ -310,36 +360,36 @@ def build_ui():
     input_text.configure(height=80)
     widgets["input_text"] = input_text
 
-    # ── بخش نام‌گذاری و جایگزینی ──────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Naming / Replacement area
+    # ------------------------------------------------------------------
     name_frame = ctk.CTkFrame(root, corner_radius=8, fg_color=BG_CARD)
     name_frame.grid(row=3, column=0, padx=10, pady=(0, 6), sticky="ew")
 
     ctk.CTkLabel(
         name_frame, text="② Config Naming",
-        font=ctk.CTkFont(weight="bold", size=13),   # درشت‌تر
+        font=ctk.CTkFont(weight="bold", size=13),
         text_color=TEXT_BLACK
     ).pack(anchor="w", padx=8, pady=(8, 2))
 
-    # کانتینر نام کاستوم (وقتی جایگزینی غیرفعال است)
     custom_name_frame = ctk.CTkFrame(name_frame, fg_color="transparent")
     widgets["custom_name_frame"] = custom_name_frame
 
     ctk.CTkLabel(
         custom_name_frame, text="Custom Name (e.g. MyServer)",
-        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        font=ctk.CTkFont(size=11),
         text_color=TEXT_GRAY
     ).pack(anchor="w", padx=0, pady=(0, 2))
 
     name_entry = ctk.CTkEntry(
         custom_name_frame, placeholder_text="MyServer",
-        font=ctk.CTkFont(size=12), height=32,       # کمی بلندتر
+        font=ctk.CTkFont(size=12), height=32,
         fg_color=BG_WHITE, text_color=TEXT_BLACK,
         border_color=GOLD
     )
     name_entry.pack(fill="x", padx=0, pady=(0, 4))
     widgets["name_entry"] = name_entry
 
-    # چک‌باکس جایگزینی
     replace_var = ctk.BooleanVar(value=False)
     widgets["replace_var"] = replace_var
 
@@ -347,19 +397,18 @@ def build_ui():
         name_frame,
         text="Enable Keyword Replacement (no numbering)",
         variable=replace_var,
-        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        font=ctk.CTkFont(size=11),
         fg_color=GOLD, hover_color=GOLD_HOVER,
         text_color=TEXT_BLACK
     )
     replace_check.pack(anchor="w", padx=8, pady=(4, 2))
 
-    # فیلدهای جایگزینی (پنهان)
     kw_frame = ctk.CTkFrame(name_frame, fg_color="transparent")
     widgets["kw_frame"] = kw_frame
 
     ctk.CTkLabel(
         kw_frame, text="Find keyword in current remark:",
-        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        font=ctk.CTkFont(size=11),
         text_color=TEXT_GRAY
     ).pack(anchor="w", pady=(2, 2))
 
@@ -374,7 +423,7 @@ def build_ui():
 
     ctk.CTkLabel(
         kw_frame, text="Replace with:",
-        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        font=ctk.CTkFont(size=11),
         text_color=TEXT_GRAY
     ).pack(anchor="w", pady=(2, 2))
 
@@ -398,13 +447,15 @@ def build_ui():
     replace_var.trace_add("write", toggle_replacement)
     toggle_replacement()
 
-    # ── فرمت خروجی ────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Output format
+    # ------------------------------------------------------------------
     out_frame = ctk.CTkFrame(root, corner_radius=8, fg_color=BG_CARD)
     out_frame.grid(row=4, column=0, padx=10, pady=(0, 6), sticky="ew")
 
     ctk.CTkLabel(
         out_frame, text="③ Output Format",
-        font=ctk.CTkFont(weight="bold", size=13),   # درشت‌تر
+        font=ctk.CTkFont(weight="bold", size=13),
         text_color=TEXT_BLACK
     ).grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
 
@@ -417,7 +468,7 @@ def build_ui():
     ctk.CTkRadioButton(
         radio_frame, text="Subscription Link (paste.rs)",
         variable=output_var, value="subscription",
-        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        font=ctk.CTkFont(size=11),
         fg_color=GOLD, hover_color=GOLD_HOVER,
         text_color=TEXT_BLACK
     ).pack(side="left", padx=(0, 20))
@@ -425,19 +476,20 @@ def build_ui():
     ctk.CTkRadioButton(
         radio_frame, text="TXT File",
         variable=output_var, value="txt",
-        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        font=ctk.CTkFont(size=11),
         fg_color=GOLD, hover_color=GOLD_HOVER,
         text_color=TEXT_BLACK
     ).pack(side="left")
 
-    # ── نوار پیشرفت (مخفی در ابتدا) ──────────────────────────────────
+    # ------------------------------------------------------------------
+    # Progress bar
+    # ------------------------------------------------------------------
     progress = ctk.CTkProgressBar(
         root, mode="indeterminate", height=10, corner_radius=4,
         fg_color="#e0e0e0", progress_color=GOLD
     )
-    # در grid ردیف 5 قرار می‌گیرد، اما مخفی می‌کنیم
     progress.grid(row=5, column=0, padx=10, pady=(4, 0), sticky="ew")
-    progress.grid_remove()  # مخفی در حالت اولیه
+    progress.grid_remove()
     progress.set(0)
     widgets["progress"] = progress
 
@@ -451,13 +503,15 @@ def build_ui():
     )
     process_btn.grid(row=6, column=0, padx=10, pady=(8, 4))
 
-    # ── نتیجه ─────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Result display
+    # ------------------------------------------------------------------
     result_frame = ctk.CTkFrame(root, corner_radius=8, fg_color=BG_CARD)
     result_frame.grid(row=7, column=0, padx=10, pady=(0, 4), sticky="ew")
 
     ctk.CTkLabel(
         result_frame, text="④ Result",
-        font=ctk.CTkFont(weight="bold", size=13),   # درشت‌تر
+        font=ctk.CTkFont(weight="bold", size=13),
         text_color=TEXT_BLACK
     ).pack(anchor="w", padx=8, pady=(8, 2))
 
@@ -469,7 +523,7 @@ def build_ui():
 
     link_entry = ctk.CTkEntry(
         result_row, textvariable=output_var_display,
-        font=ctk.CTkFont(size=12), height=30,       # درشت‌تر
+        font=ctk.CTkFont(size=12), height=30,
         state="readonly", corner_radius=4,
         fg_color=BG_WHITE, text_color=TEXT_BLACK,
         border_color=GOLD
@@ -489,24 +543,32 @@ def build_ui():
     )
     copy_btn.pack(side="right")
 
-    # ── وضعیت ──────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Status bar
+    # ------------------------------------------------------------------
     status_label = ctk.CTkLabel(
         root, text="Status: Idle",
-        font=ctk.CTkFont(size=11),                  # درشت‌تر
+        font=ctk.CTkFont(size=11),
         text_color=TEXT_GRAY
     )
     status_label.grid(row=8, column=0, padx=10, pady=(2, 4), sticky="ew")
     widgets["status_label"] = status_label
 
-    # ── پانویس ────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Footer
+    # ------------------------------------------------------------------
     ctk.CTkLabel(
         root,
         text="Subscription links on paste.rs remain active ~30 days.",
-        font=ctk.CTkFont(size=10),                  # درشت‌تر
+        font=ctk.CTkFont(size=10),
         text_color=TEXT_GRAY
     ).grid(row=9, column=0, padx=10, pady=(0, 8), sticky="ew")
 
     root.mainloop()
 
+# ----------------------------------------------------------------------
+# Entry point
+# ----------------------------------------------------------------------
 if __name__ == "__main__":
     build_ui()
+
