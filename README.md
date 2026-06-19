@@ -1,5 +1,3 @@
-
-```markdown
 # 🪐 ConfiGodZilla Subscription Tool
 
 A modern, lightweight desktop GUI that takes a V2Ray/Xray‑style subscription (URL or raw configs), renames every config remark exactly the way you want, and gives you back either a fresh subscription link or a local `.txt` file — all with a clean white & gold interface.
@@ -42,14 +40,13 @@ A modern, lightweight desktop GUI that takes a V2Ray/Xray‑style subscription (
   sudo apt install python3-tk
   ```
 
-Install everything with:
+Install everything with: 
 ```bash
 pip install -r requirements.txt
 ```
 
-*(Make sure `requirements.txt` includes both `requests` and `customtkinter`.)*
-
 ## 🚀 Installation & Usage
+You can download the executable file from the Releases section, or follow the steps below:
 
 ```bash
 git clone https://github.com/<your-username>/<your-repo>.git
@@ -98,6 +95,3 @@ This tool depends on the free, open‑source **[paste.rs](https://paste.rs)** pa
 ## 📄 License
 
 MIT — feel free to use, modify, and share.
-```
-
-You can copy this directly into your `README.md` and replace `<your-username>` / `<your-repo>` with your actual GitHub details. Remember to keep `requirements.txt` updated with `customtkinter` and `requests`.
