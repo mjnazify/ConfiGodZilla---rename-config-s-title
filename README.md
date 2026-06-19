@@ -1,15 +1,31 @@
 ## 📺 EDUCATIONAL VIDEO COMING SOON!
-# This project was built under the supervision of Artificial Intelligence, with minimal human involvement.
 
-# Special thanks to aistudio.google.com and everyone else who contributes to making the world a better place. 🌍
+> This project was built under the supervision of Artificial Intelligence, with minimal human involvement.
+>
+> Special thanks to aistudio.google.com and everyone else who contributes to making the world a better place. 🌍
 
-
+---
 
 # 🪐 ConfiGodZilla Subscription Tool
 
 A modern, lightweight desktop GUI that takes a V2Ray/Xray‑style subscription (URL or raw configs), renames every config remark exactly the way you want, and gives you back either a fresh subscription link or a local `.txt` file — all with a clean white & gold interface.
 
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center" style="padding: 10px 20px;">
+      <strong>Windows Version</strong><br><br>
+      <img width="493" alt="Screenshot (6)" src="https://github.com/user-attachments/assets/47f2cf45-cb28-4304-aaed-36fc8a12f494" />
+    </td>
+    <td align="center" style="padding: 10px 20px;">
+      <strong>📱 Android Version</strong><br><br>
+      <img width="288" alt="photo_2026-06-19_07-08-41" src="https://github.com/user-attachments/assets/ec26654a-2795-44d1-a097-57e1e6bf32d6" />
+    </td>
+  </tr>
+</table>
 
 ## ✨ Features
 
