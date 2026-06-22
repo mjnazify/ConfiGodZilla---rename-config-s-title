@@ -58,6 +58,7 @@ A modern, lightweight desktop GUI that takes a V2Ray/Xray‑style subscription (
 - Python 3.8+
 - [`requests`](https://pypi.org/project/requests/)
 - [`customtkinter`](https://pypi.org/project/customtkinter/) – the modern GUI toolkit
+- [`pyperclip`](https://pypi.org/project/pyperclip/) – for clipboard integration
 - `tkinter` – ships with most Python installs. On Linux, if missing:
   ```bash
   sudo apt install python3-tk
