@@ -4,7 +4,7 @@ A lightweight utility to rename and repack VPN subscription configs.
 """
 
 import customtkinter as ctk
-from tkinter import messagebox, filedialog, PhotoImage
+from tkinter import messagebox, filedialog
 import requests
 import base64
 import json
