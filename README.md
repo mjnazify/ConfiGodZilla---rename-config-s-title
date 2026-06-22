@@ -69,13 +69,28 @@ pip install -r requirements.txt
 ```
 
 ## 🚀 Installation & Usage
-You can download the executable file from the Releases section, or follow the steps below:
+
+#### Pre‑built binaries (recommended)
+
+**Windows**  
+1. Download `ConfiGodZilla.exe` from the [Releases](https://github.com/<your-username>/<your-repo>/releases) page.  
+2. The executable is **64‑bit only**. If you need a 32‑bit version, please open an issue.  
+3. Run the file — no installation required.
+
+**Android**  
+1. Download `ConfiGodZilla.apk` from the Releases page.  
+2. Since the app is not distributed through Google Play, you must allow installation from unknown sources when prompted.  
+3. **Google Play Protect** may block the installation with a warning.  
+   Tap **More options** (or **Details**) and then **Install anyway**.  
+4. Once installed, open the app and enjoy.
+
+#### Run from source
 
 ```bash
-git clone https://github.com/<your-username>/<your-repo>.git
-cd <your-repo>
+git clone https://github.com/mjnazify/ConfiGodZilla--rename-configs-title.git
+cd ConfiGodZilla--rename-configs-title
 pip install -r requirements.txt
-python configgodzilla.py
+python configodzilla.py
 ```
 
 1. **Input** – paste a subscription URL (starting with `https://`) **or** raw config lines directly into the top box.
